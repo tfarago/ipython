@@ -671,6 +671,31 @@ class TerminalInteractiveShell(InteractiveShell):
             else:
                 if code:
                     self.run_cell(code, store_history=True)
+                    if self.active_eventloop == 'asyncio':
+                        # Same loop for code and prompt_toolkit. If user starts a task which
+                        # contains a blocking call, e.g. `time.sleep()`, IPython will not use the
+                        # loop runner but the pseudo runner which will return immediately and we
+                        # will go into prompt_for_code. If KeyboardInterrupt comes while we were in
+                        # there, the internal prompt_toolkit state may get corrupted. By running
+                        # this dummy task we make sure we get "stuck" here in case some previous
+                        # task is in a blocking call which allows us to intercept the
+                        # KeyboardInterrupt exception before going back to prompt_for_code.
+                        # Moreover, we need to do this in a loop in case multiple blocking tasks are
+                        # started at once.
+                        loop = get_asyncio_loop()
+                        while True:
+                            try:
+                                pending = asyncio.all_tasks(loop=loop)
+                                loop.run_until_complete(asyncio.sleep(0))
+                            except KeyboardInterrupt:
+                                self.showtraceback(tb_offset=5)
+                            else:
+                                break
+                            finally:
+                                for task in pending:
+                                    if task.done():
+                                        # Prevent "exception was never retrieved"
+                                        task.exception()
 
     def mainloop(self):
         # An extra layer of protection in case someone mashing Ctrl-C breaks
