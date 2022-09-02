@@ -110,6 +110,15 @@ class mock_input_helper(object):
 
     def fake_input(self):
         try:
+            if self.ip.active_eventloop == 'asyncio':
+                # For gh-13737
+                # Force loop to do something so that we simulate the behavior of PT application's
+                # run. Without checking for KeyboardInterrupt inside terminal's interact(), it will
+                # be raised here (or in reality in PT app).
+                import asyncio
+                from IPython.core.async_helpers import get_asyncio_loop
+                loop = get_asyncio_loop()
+                loop.run_until_complete(asyncio.sleep(0))
             return next(self.testgen)
         except StopIteration:
             self.ip.keep_running = False
@@ -240,3 +249,26 @@ class TerminalMagicsTestCase(unittest.TestCase):
         tm.store_or_execute(s, name=None)
         
         self.assertEqual(ip.user_ns['pasted_func'](54), 55)
+
+
+class KeyboardInterruptBlockingCall(unittest.TestCase):
+    def test_keyboardinterrupt_in_blocking_call(self):
+        # Tests gh-13737
+        def yield_code():
+            code = (
+                'from IPython.core.async_helpers import get_asyncio_loop\n'
+                'loop = get_asyncio_loop()\n'
+                '\n'
+                'async def coro():\n'
+                '    raise KeyboardInterrupt\n'
+                '\n'
+                'task = loop.create_task(coro())\n'
+            )
+
+            yield '%gui asyncio'
+            yield code
+
+        with mock_input_helper(yield_code()) as mih:
+            mih.ip.interact()
+            if mih.exception and mih.exception[0] == KeyboardInterrupt:
+                self.fail()
